@@ -8,8 +8,8 @@ This script creates `kopia` backups that capture all your files at (nearly) the 
 To do so, it takes one or more zfs datasets, snapshots each one, `nullfs`-mounts them together at a temporary mount point, and runs `kopia` on that filesystem.
 Backing up from a zfs snapshot ensures that files don't change during the backup.
 
-Because it uses zfs to take atomic snapshots and `nullfs` to assemble filesystems, the script supports only zfs datasets on FreeBSD systems.
-It's written in POSIX shell script and has no dependencies apart from `kopia` and the FreeBSD base system.
+Because it uses zfs to take atomic snapshots and `nullfs` to assemble filesystems, the script supports only zfs datasets on FreeBSD.
+It's written in POSIX shell script and has no dependencies apart from `kopia`.
 
 ## Quick Start
 
