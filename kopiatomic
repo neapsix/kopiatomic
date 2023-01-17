@@ -1,0 +1,373 @@
+#!/bin/sh
+#
+# Script to make atomic backups with kopia using zfs snapshots
+#
+# Ben Spiegel
+#
+# changelog:
+# 2023/01/14: *brs: created
+#
+
+VERSION='0.1'
+
+# Paths and stat syntax for FreeBSD:
+ZFS='/sbin/zfs'
+GREP='/usr/bin/grep'
+KOPIA='/usr/local/bin/kopia'
+
+# Paths and stat syntax for Linux:
+# Note: Linux is not currently supported due to use of nullfs
+# ZFS='/usr/sbin/zfs'
+# GREP='/usr/bin/grep'
+# KOPIA='/usr/bin/kopia'
+
+# Snapshot namespace is a prefix (script name and PID) and the date
+PREFIX="$(basename $0)_$$_"
+DATE=$(date "+%F_%T")
+TMPDIR="/tmp/.$PREFIX$DATE"
+MNTDIR="/kopia"
+
+__usage="
+Usage: $(basename $0) [-h][-n][-r][-a][-v] <dataset or mountpoint> [...]
+"
+
+__help="
+Makes atomic backups with kopia by creating a snapshot of each zfs dataset,
+nullfs-mounting those snapshots together into a temp directory, and running the
+backup command on the contents of that directory.
+
+The script backs up the zfs datasets or dataset mountpoints you specify.
+Datasets must be mounted to be backed up. You can optionally process child
+datasets with -r or process all mounted datasets with -a.
+
+Because it uses nullfs to assemble filesystems, the script runs only on 
+FreeBSD.
+
+For example, $(basename $) -r zroot, given the following zfs list output:
+
+        \$ zfs list -t filesystem -H -o name
+        zroot
+        zroot/usr
+        zroot/usr/home
+
+creates snapshots using a prefix, PID, and date as namespace, such as:
+
+        zroot@${PREFIX}${DATE}
+        zroot/usr@${PREFIX}${DATE}
+        zroot/usr/home@${PREFIX}${DATE}
+
+Then, for each dataset, it (1) gets the mountpoint as follows:
+
+        \$ zfs get -H -o value mountpoint zroot/usr/home
+        /usr/home
+
+If there is a mountpoint, it (2) mounts the snapshot contents as follows:
+
+        # mount -o ro -t nullfs 
+        # mount -o ro -t nullfs \
+        #   /usr/home/.zfs/snapshot/${PREFIX}${DATE}
+        #   /tmp/.${PREFIX}${DATE}/mnt/usr/home
+
+and runs a kopia command as follows:
+
+        # kopia snapshot create /kopia
+
+Finally, it unmounts the nullfs directory tree, removes the temp directory,
+and destroys the snapshots that were created.
+
+Options:
+        -h      Print this help text and exit
+        -n      Dry run without actually creating snapshots or backing up
+        -r      Process children of specified datasets recursively
+        -a      Back up all datasets
+        -v      Print the version number and exit
+"
+
+# usage()
+#
+# Print usage information.
+#
+usage()
+{
+    echo "$__usage"; 
+}
+
+# help()
+#
+# Print detailed help text.
+#
+help()
+{
+    echo "$__help"; 
+}
+
+# Process command line options
+dry_run=0
+zfs_recursive=
+all_datasets=0
+while getopts "hnrav" option; do
+    case "$option" in
+        h) usage; help; exit 0;;
+        n) dry_run=1;;
+        r) zfs_recursive='-r';;
+        a) all_datasets=1;;
+        v) echo "$VERSION"; exit 0;;
+        ?) usage; exit 1;;
+    esac
+done
+
+# Done processing options. Shift the index so only target arguments are left
+shift $(($OPTIND - 1))
+
+DATASETS=
+
+# Make sure there is at least one argument or -a is specified
+if [ "$#" -lt 1 ] && [ "$all_datasets" -ne 1 ]; then
+    usage; exit 1
+fi
+
+# Unless -a is specified, capture specified datasets from the args
+if [ "$all_datasets" -ne 1 ]; then
+    DATASETS="$*"
+fi
+
+# Make sure valid datasets are specified. Note: don't double-quote $DATASETS
+if ! $ZFS list -t filesystem $zfs_recursive $DATASETS > /dev/null;  then
+    exit 1
+fi
+
+# output()
+#
+# Print a line of output, indicating dry_run option if present.
+#
+output()
+{
+    if [ $dry_run -ne 0 ]; then
+        printf "(Dry Run) "
+    fi
+
+    printf "$@"
+}
+
+# run_command()
+#
+# Run or no-op a command depending on the dry_run option.
+#
+run_command()
+{
+    if [ $dry_run -eq 0 ]; then
+        "$@"
+    fi
+}
+
+# take_snapshots()
+#
+# Take snapshots for all datasets.
+# 
+# Loops over all zfs datasets. For each one, generates a commmand to take a
+# snapshot with the script's namespace and the date and time. For example:
+#
+#   # zfs snap zroot/usr/home@kopiatomic_123_2023-01-14_01:00:00
+#
+take_snapshots()
+{
+    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS | while read -r dataset; do
+        output "Snapshotting %s... " "$dataset"
+
+        ZFSLISTCOMMAND=$(printf \
+            "%s snap %s@%s%s" \
+            "$ZFS" "$dataset" "$PREFIX" "$DATE")
+        run_command $ZFSLISTCOMMAND \
+            && printf "done.\n"
+    done
+}
+
+# mount_snapshots()
+#
+# For each dataset, open the snapshot and mount it into a directory tree.
+#
+# Loops over all zfs datasets. For each one, generates and runs commands to
+# perform the following steps:
+#   1. Look up the dataset mountpoint, skipping datasets with no mountpoint.
+#   2. Mount the snapshot's mountpoint (/dataset/.zfs/snapshot/<name) within
+#      the working directory, recreating the mounted filesystem layout.
+#
+# For example, for dataset zroot/usr/home:
+#   
+#   # zfs get -H -o value mountpoint zroot/usr/home
+#   # mount -o ro -t nullfs \
+#       /usr/home/.zfs/snapshot/kopiatomic_123_2022-01-14_01:00:00 \
+#       /path/to/working/dir/usr/home
+#
+mount_snapshots()
+{
+    # Create the destinations for mount points and temp files
+    run_command mkdir -p "$TMPDIR"
+    run_command umask 0077 && run_command mkdir -p "$MNTDIR" && run_command umask 0022
+
+    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS | while read -r dataset; do
+        # Get the mountpoint for this dataset
+        MOUNTPOINTCOMMAND=$(printf \
+            "%s get -H -o value mountpoint %s\n" \
+            "$ZFS" "$dataset")
+        MOUNTPOINT=$($MOUNTPOINTCOMMAND)
+
+        # Don't try to back up datasets with no mountpoint (wouldn't know where
+        # to put them in the backup destination)
+        if [ "$MOUNTPOINT" = 'none' ]; then
+            output "Skipping %s because it's not mounted.\n" "$dataset"
+            continue
+        fi
+
+        # Access the snapshot we created (cd to its directory under .zfs)
+        SNAPDIR=''
+
+        if [ "$MOUNTPOINT" = '/' ]; then
+            SNAPDIR=$(printf "/.zfs/snapshot/%s%s" \
+                "$PREFIX" "$DATE")
+        else
+            SNAPDIR=$(printf "%s/.zfs/snapshot/%s%s" \
+                "$MOUNTPOINT" "$PREFIX" "$DATE")
+        fi
+
+        # If a dataset doesn't have any files in it (such as a dataset like
+        # /usr that contains only other datasets), the .zfs/snapshot directory
+        # doesn't exist. Skip the dataset in that case.
+        #
+        # Don't check this on dry run. We didn't create the snapshot, so the
+        # directory doesn't exist.
+        if  [ $dry_run -eq 0 ] && ! stat "$SNAPDIR" > /dev/null 2>&1 ; then
+            output "Skipping %s. No snapshot directory (dataset empty).\n" \
+                "$dataset"
+            continue
+        fi
+
+        MOUNTDESTINATION=$(printf "%s%s" \
+            "$MNTDIR" "$MOUNTPOINT")
+
+        output "Mounting %s into %s... " \
+            "$SNAPDIR" "$MOUNTDESTINATION"
+
+        MOUNTCOMMAND=$(printf \
+            "mount -o ro -t nullfs %s %s" \
+            "$SNAPDIR" "$MOUNTDESTINATION")
+
+        run_command mkdir -p "$MOUNTDESTINATION" \
+            && run_command $MOUNTCOMMAND \
+            && printf "done.\n" \
+
+        # Write out what was mounted to a file, but not on dry run
+        if [ $dry_run -eq 0 ]; then
+            printf '%s' "$MOUNTDESTINATION " >> "$TMPDIR/to_unmount"
+        fi
+    done
+}
+
+# run_kopia_backup()
+#
+# Run a backup using kopia.
+#
+run_kopia_backup()
+{
+    output "Running backup... \n"
+
+    # Make sure the repository is connected before running the snapshot
+    # command. Either run a connect command to configure kopia before
+    # running this script or uncomment and update the following lines. 
+    
+    # export B2_KEY_ID='XXX'
+    # export B2_KEY='XXX'
+    # export KOPIA_PASSWORD='XXX'
+    # export KOPIA_B2_BUCKET='XXX'
+
+    # run_command $KOPIA repository connect b2 --bucket="$KOPIA_B2_BUCKET"
+    run_command $KOPIA snapshot create "$MNTDIR" 
+    output "...done.\n"
+}
+
+# unmount_snapshots()
+#
+# Unmount nullfs-mounted snapshots and delete mountpoint directories.
+#
+# Reads the temp file where mounted snapshots were recorded and runs a
+# umount command with the whole list as arguments.
+#
+# To make sure everything is unmounted recursively even if a mount point is
+# listed before its children (such as /usr before /usr/src), the function
+# first attempts to unmount the top-level mount directory and then repeats
+# the umount command in a loop until that directory no longer returns busy.
+#
+unmount_snapshots()
+{
+    output "Unmounting all mounted snapshots"
+
+    # Don't do anything on a dry run
+    if [ $dry_run -ne 0 ]; then
+        printf " done.\n"
+        return;
+    fi
+
+    TOUNMOUNT=$(cat "$TMPDIR/to_unmount")
+
+    umount_count=0
+    while [ $umount_count -le 5 ]; do
+        printf "..."
+        if umount -f -t nullfs $TOUNMOUNT > /dev/null 2>&1; then
+            break
+        fi
+        umount_count=$(($umount_count+1))
+    done
+
+    rm -r "$MNTDIR"
+
+    printf " done.\n"
+}
+
+# destroy_snapshots()
+#
+# Remove snapshots in the script's namespace for this run's date and time.
+#
+# Generates and runs a command like the following:
+#   
+#   zfs list -H -o name -t snap \
+#   | grep kopiatomic_123_2023-01-14_01:00:00 \
+#   | xargs -n1 zfs destroy
+#
+destroy_snapshots()
+{
+    output "Destroying snapshots... "
+
+    run_command $ZFS list -H -o name -t snap \
+        | $GREP $PREFIX$DATE \
+        | xargs -n1 $ZFS destroy \
+        && printf "done.\n"
+}
+
+# remove_temp_files()
+#
+# Delete temporary files created by the script.
+#
+remove_temp_files()
+{
+    output "Removing temp files... "
+    run_command rm -r $TMPDIR \
+        && printf "done.\n"
+}
+
+# clean_up()
+#
+# Unmount and remove files used during the script.
+#
+clean_up()
+{
+    output "Cleaning up...\n"
+    unmount_snapshots;
+    destroy_snapshots;
+    remove_temp_files;
+    output "...done.\n"
+}
+
+take_snapshots;
+mount_snapshots;
+run_kopia_backup;
+clean_up;
