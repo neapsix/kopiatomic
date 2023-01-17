@@ -10,12 +10,12 @@
 
 VERSION='0.1'
 
-# Paths and stat syntax for FreeBSD:
+# Paths for FreeBSD:
 ZFS='/sbin/zfs'
 GREP='/usr/bin/grep'
 KOPIA='/usr/local/bin/kopia'
 
-# Paths and stat syntax for Linux:
+# Paths for Linux:
 # Note: Linux is not currently supported due to use of nullfs
 # ZFS='/usr/sbin/zfs'
 # GREP='/usr/bin/grep'
@@ -162,10 +162,11 @@ run_command()
 
 # take_snapshots()
 #
-# Take snapshots for all datasets.
+# Take a snapshots of each specified dataset.
 # 
-# Loops over all zfs datasets. For each one, generates a commmand to take a
-# snapshot with the script's namespace and the date and time. For example:
+# Loops over zfs datasets from the args (either a string or blank for all),
+# adding -r if specified in the options. For each one, generates and runs a
+# commmand to take a snapshot in the script's namespace. For example:
 #
 #   # zfs snap zroot/usr/home@kopiatomic_123_2023-01-14_01:00:00
 #
@@ -186,8 +187,8 @@ take_snapshots()
 #
 # For each dataset, open the snapshot and mount it into a directory tree.
 #
-# Loops over all zfs datasets. For each one, generates and runs commands to
-# perform the following steps:
+# Loops over zfs datasets from the args (either a string or blank for all). For
+# each one, generates and runs commands to perform the following steps:
 #   1. Look up the dataset mountpoint, skipping datasets with no mountpoint.
 #   2. Mount the snapshot's mountpoint (/dataset/.zfs/snapshot/<name) within
 #      the working directory, recreating the mounted filesystem layout.
@@ -197,7 +198,7 @@ take_snapshots()
 #   # zfs get -H -o value mountpoint zroot/usr/home
 #   # mount -o ro -t nullfs \
 #       /usr/home/.zfs/snapshot/kopiatomic_123_2022-01-14_01:00:00 \
-#       /path/to/working/dir/usr/home
+#       /kopia/usr/home
 #
 mount_snapshots()
 {
@@ -231,7 +232,7 @@ mount_snapshots()
         fi
 
         # If a dataset doesn't have any files in it (such as a dataset like
-        # /usr that contains only other datasets), the .zfs/snapshot directory
+        # zroot that contains only other datasets), the .zfs/snapshot directory
         # doesn't exist. Skip the dataset in that case.
         #
         # Don't check this on dry run. We didn't create the snapshot, so the
@@ -294,8 +295,7 @@ run_kopia_backup()
 #
 # To make sure everything is unmounted recursively even if a mount point is
 # listed before its children (such as /usr before /usr/src), the function
-# first attempts to unmount the top-level mount directory and then repeats
-# the umount command in a loop until that directory no longer returns busy.
+# uses forceful unmounts and attempts to run the umount command up to 5 times.
 #
 unmount_snapshots()
 {
