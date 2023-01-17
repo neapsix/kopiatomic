@@ -34,7 +34,7 @@ That said, this drift might not be a problem.
 Unless a file changes very frequently, it's likely that it gets backed up correctly the next time `kopia` runs.
 In that case, backup integrity is OK, but the backup might provide a recovery point objective one snapshot further back than it appears.
 
-For general, non-database use, `kopiatomic` can make your `kopia` backups more consistent, although it also adds a small amount of complexity.
+For general, non-database use, `kopiatomic` can make your `kopia` backups more consistent at the cost of a little complexity.
 Note that it's not a robust solution for data where atomic backups are critical.
 
 One limitation to be aware of: `kopiatomic` doesn't make precisely atomic snapshots across datasets.
