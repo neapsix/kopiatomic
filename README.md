@@ -38,7 +38,7 @@ For general, non-database use, `kopiatomic` can make your `kopia` backups more c
 Note that it's not a robust solution for data where atomic backups are critical.
 
 One limitation to be aware of: `kopiatomic` doesn't make precisely atomic snapshots across datasets.
-Files within each dataset are captured atomically, but datasets might be captured at slightly different times, because `zfs snapshot` command can take a few milliseconds to run.
+Files within each dataset are captured atomically, but datasets might be captured at slightly different times, because the `zfs snapshot` command can take a few milliseconds to run.
 
 ## Acknowledgements
 
