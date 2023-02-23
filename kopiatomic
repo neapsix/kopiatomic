@@ -40,10 +40,10 @@ The script backs up the zfs datasets or dataset mountpoints you specify.
 Datasets must be mounted to be backed up. You can optionally process child
 datasets with -r or process all mounted datasets with -a.
 
-Because it uses nullfs to assemble filesystems, the script runs only on 
+Because it uses nullfs to assemble filesystems, the script runs only on
 FreeBSD.
 
-For example, $(basename $) -r zroot, given the following zfs list output:
+For example, $(basename $0) -r zroot, given the following zfs list output:
 
         \$ zfs list -t filesystem -H -o name
         zroot
@@ -63,14 +63,13 @@ Then, for each dataset, it (1) gets the mountpoint as follows:
 
 If there is a mountpoint, it (2) mounts the snapshot contents as follows:
 
-        # mount -o ro -t nullfs 
-        # mount -o ro -t nullfs \
-        #   /usr/home/.zfs/snapshot/${PREFIX}${DATE}
-        #   /tmp/.${PREFIX}${DATE}/mnt/usr/home
+        # mount -o ro -t nullfs \\
+          /usr/home/.zfs/snapshot/${PREFIX}${DATE} \\
+          ${MNTDIR}/usr/home
 
 and runs a kopia command as follows:
 
-        # kopia snapshot create /kopia
+        # kopia snapshot create ${MNTDIR}
 
 Finally, it unmounts the nullfs directory tree, removes the temp directory,
 and destroys the snapshots that were created.
@@ -89,7 +88,7 @@ Options:
 #
 usage()
 {
-    echo "$__usage"; 
+    echo "$__usage";
 }
 
 # help()
@@ -98,7 +97,7 @@ usage()
 #
 help()
 {
-    echo "$__help"; 
+    echo "$__help";
 }
 
 # Process command line options
@@ -163,7 +162,7 @@ run_command()
 # take_snapshots()
 #
 # Take a snapshots of each specified dataset.
-# 
+#
 # Loops over zfs datasets from the args (either a string or blank for all),
 # adding -r if specified in the options. For each one, generates and runs a
 # commmand to take a snapshot in the script's namespace. For example:
@@ -194,7 +193,7 @@ take_snapshots()
 #      the working directory, recreating the mounted filesystem layout.
 #
 # For example, for dataset zroot/usr/home:
-#   
+#
 #   # zfs get -H -o value mountpoint zroot/usr/home
 #   # mount -o ro -t nullfs \
 #       /usr/home/.zfs/snapshot/kopiatomic_123_2022-01-14_01:00:00 \
@@ -274,15 +273,15 @@ run_kopia_backup()
 
     # Make sure the repository is connected before running the snapshot
     # command. Either run a connect command to configure kopia before
-    # running this script or uncomment and update the following lines. 
-    
+    # running this script or uncomment and update the following lines.
+
     # export B2_KEY_ID='XXX'
     # export B2_KEY='XXX'
     # export KOPIA_PASSWORD='XXX'
     # export KOPIA_B2_BUCKET='XXX'
 
     # run_command $KOPIA repository connect b2 --bucket="$KOPIA_B2_BUCKET"
-    run_command $KOPIA snapshot create "$MNTDIR" 
+    run_command $KOPIA snapshot create "$MNTDIR"
     output "...done.\n"
 }
 
@@ -328,7 +327,7 @@ unmount_snapshots()
 # Remove snapshots in the script's namespace for this run's date and time.
 #
 # Generates and runs a command like the following:
-#   
+#
 #   zfs list -H -o name -t snap \
 #   | grep kopiatomic_123_2023-01-14_01:00:00 \
 #   | xargs -n1 zfs destroy
