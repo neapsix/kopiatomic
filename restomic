@@ -76,7 +76,8 @@ and runs a restic command as follows:
             --keep-daily=7 \\
             --keep-weekly=4 \\
             --keep-monthly=6 \\
-            --keep-yearly=1
+            --keep-yearly=1 \\
+            --prune
 
 Finally, it unmounts the nullfs directory tree, removes the temp directory,
 and destroys the snapshots that were created.
@@ -84,7 +85,7 @@ and destroys the snapshots that were created.
 Options:
         -h      Print this help text and exit
         -n      Dry run without actually creating snapshots or backing up
-        -N      Use dry run mode for restic commnad only
+        -N      Use dry run mode for restic command only
         -r      Process children of specified datasets recursively
         -a      Back up all datasets
         -v      Print the version number and exit
@@ -296,6 +297,7 @@ run_restic_backup()
         --keep-weekly=4 \
         --keep-monthly=6 \
         --keep-yearly=1 \
+        --prune \
     && output "...done.\n"
 }
 
