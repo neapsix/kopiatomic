@@ -5,10 +5,11 @@
 # Ben Spiegel
 #
 # changelog:
+# 2023/03/18: *brs: added command and args options
 # 2023/01/14: *brs: created
 #
 
-VERSION='0.1'
+VERSION='0.2'
 
 # Paths for FreeBSD:
 ZFS='/sbin/zfs'
@@ -67,27 +68,20 @@ If there is a mountpoint, it (2) mounts the snapshot contents as follows:
             /usr/home/.zfs/snapshot/${PREFIX}${DATE} \\
             ${MNTDIR}/usr/home
 
-and runs a restic command as follows:
+and runs a restic backup command as follows:
 
         # restic backup ${MNTDIR}
-        # restic forget \\
-            --keep-last=10 \\
-            --keep-hourly=48 \\
-            --keep-daily=7 \\
-            --keep-weekly=4 \\
-            --keep-monthly=6 \\
-            --keep-yearly=1 \\
-            --prune
 
 Finally, it unmounts the nullfs directory tree, removes the temp directory,
 and destroys the snapshots that were created.
 
 Options:
+        -a      Back up all datasets
+        -c      Specify command to run (default: \`restic backup\`)
         -h      Print this help text and exit
         -n      Dry run without actually creating snapshots or backing up
-        -N      Use dry run mode for restic command only
+        -p      Specify arguments to pass to the command
         -r      Process children of specified datasets recursively
-        -a      Back up all datasets
         -v      Print the version number and exit
 "
 
@@ -111,16 +105,38 @@ help()
 
 # Process command line options
 dry_run=0
-restic_dry_run=''
 zfs_recursive=
 all_datasets=0
-while getopts "hnNrav" option; do
+backup_command="$RESTIC backup"
+backup_command_args=
+
+# TODO: handle long options once standard short versions are implemented
+# Convert long options (if present) to short options
+# for longopt in "$@"; do
+#     case "$longopt" in
+#         --command=?*)
+#             quotedstring=$(printf "%q" ${longopt#*=})
+#             echo $quotedstring
+#             # Assign the string to the equivalent short option and value.
+#             # Note: ${arg#*=} deletes through =, leaving the value.
+#             set -- "$@" "-c${longopt#*=}"
+#             shift
+#         ;;
+#         --command-args=?*)
+#             set -- "$@" "-p${longopt#*=}"
+#             shift
+#         ;;
+#     esac
+# done
+
+while getopts "ac:hnp:rv" option; do
     case "$option" in
+        a) all_datasets=1;;
+        c) backup_command=${OPTARG};;
         h) usage; help; exit 0;;
         n) dry_run=1;;
-        N) restic_dry_run='-n';;
+        p) backup_command_args=${OPTARG};;
         r) zfs_recursive='-r';;
-        a) all_datasets=1;;
         v) echo "$VERSION"; exit 0;;
         ?) usage; exit 1;;
     esac
@@ -197,11 +213,15 @@ take_snapshots()
 #
 # For each dataset, open the snapshot and mount it into a directory tree.
 #
-# Loops over zfs datasets from the args (either a string or blank for all). For
-# each one, generates and runs commands to perform the following steps:
+# First, ensures the directory for a temp file to record exists. Then, loops 
+# over zfs datasets from the args (either a string or blank for all). For each
+# one, generates and runs commands to do the following:
+#
 #   1. Look up the dataset mountpoint, skipping datasets with no mountpoint.
-#   2. Mount the snapshot's mountpoint (/dataset/.zfs/snapshot/<name) within
-#      the working directory, recreating the mounted filesystem layout.
+#   2. Mount the snapshot's mountpoint (/dataset/.zfs/snapshot/<name>) within
+#      the working directory, recreating the mounted filesystem layout,
+#      skipping datasets for which the snapshot mountpoint doesn't exist.
+#   3. Write out the mount desgination to the temp file.
 #
 # For example, for dataset zroot/usr/home:
 #   
@@ -209,6 +229,7 @@ take_snapshots()
 #   # mount -o ro -t nullfs \
 #       /usr/home/.zfs/snapshot/restomic_123_2022-01-14_01:00:00 \
 #       /restic/usr/home
+#   # printf /restic/usr/home >> /tmp/
 #
 mount_snapshots()
 {
@@ -276,28 +297,16 @@ mount_snapshots()
 
 # run_restic_backup()
 #
-# Run a backup using restic.
+# Run the specified backup command (by default, path to restic) with the 
+# specified arguments plus the mountpoint directory as the last argument.
 #
 run_restic_backup()
 {
     output "Running backup... \n"
 
-    # Make sure these environment variables are set before running.
-    
-    # export B2_ACCOUNT_ID='XXX'
-    # export B2_ACCOUNT_KEY='XXX'
-    # export RESTIC_REPOSITORY='XXX'
-    # export RESTIC_PASSWORD_FILE='XXX'
-    
-    run_command $RESTIC backup "$restic_dry_run" "$MNTDIR" \
-    && run_command $RESTIC forget "$restic_dry_run" \
-        --keep-last=10 \
-        --keep-hourly=48 \
-        --keep-daily=7 \
-        --keep-weekly=4 \
-        --keep-monthly=6 \
-        --keep-yearly=1 \
-        --prune \
+    # Note: expands command and arguments before feeding them to the shell
+    # so that commands like `restomic -c "restic backup" -p "-n" /home` work.
+    run_command ${backup_command} ${backup_command_args} "$MNTDIR" \
     && output "...done.\n"
 }
 
