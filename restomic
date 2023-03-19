@@ -29,7 +29,7 @@ TMPDIR="/tmp/.$PREFIX$DATE"
 MNTDIR="/restic"
 
 __usage="
-Usage: $(basename $0) [-h][-n][-N][-r][-a][-v] <dataset or mountpoint> [...]
+Usage: $(basename $0) [-a][-c cmd][-h][-n][-p args][-r][-v] <dataset or mountpoint> [...]
 "
 
 __help="
@@ -110,13 +110,11 @@ all_datasets=0
 backup_command="$RESTIC backup"
 backup_command_args=
 
-# TODO: handle long options once standard short versions are implemented
+# TODO: handle long options
 # Convert long options (if present) to short options
 # for longopt in "$@"; do
 #     case "$longopt" in
 #         --command=?*)
-#             quotedstring=$(printf "%q" ${longopt#*=})
-#             echo $quotedstring
 #             # Assign the string to the equivalent short option and value.
 #             # Note: ${arg#*=} deletes through =, leaving the value.
 #             set -- "$@" "-c${longopt#*=}"
