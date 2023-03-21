@@ -29,20 +29,20 @@ TMPDIR="/tmp/.$PREFIX$DATE"
 MNTDIR="/restic"
 
 __usage="
-Usage: $(basename $0) [-a][-c cmd][-h][-n][-p args][-r][-v] <dataset or mountpoint> [...]
+Usage: $(basename $0) [-ahnrv][-c cmd][-o opts] <dataset or path> [...]
 "
 
 __help="
 Makes atomic backups with restic by creating a snapshot of each zfs dataset,
-nullfs-mounting those snapshots together into a temp directory, and running the
-backup command on the contents of that directory.
+nullfs-mounting those snapshots together into a working directory, and running
+the backup command on the contents of that directory.
 
-The script backs up the zfs datasets or dataset mountpoints you specify.
-Datasets must be mounted to be backed up. You can optionally process child
-datasets with -r or process all mounted datasets with -a.
+The script backs up one or more zfs datasets you specify (in zfs notation or
+as a file path). Datasets must be mounted to be backed up. You can optionally
+process child datasets too with -r or process all mounted datasets with -a.
 
-Because it uses nullfs to assemble filesystems, the script runs only on 
-FreeBSD.
+Because it uses nullfs to assemble datasets into the working directory, the
+script runs only on FreeBSD.
 
 For example, $(basename $0) -r zroot, given the following zfs list output:
 
@@ -72,15 +72,15 @@ and runs a restic backup command as follows:
 
         # restic backup ${MNTDIR}
 
-Finally, it unmounts the nullfs directory tree, removes the temp directory,
-and destroys the snapshots that were created.
+Finally, it unmounts the nullfs directory tree, removes the working directory
+and temp files, and destroys the snapshots that were created.
 
 Options:
         -a      Back up all datasets
-        -c      Specify command to run (default: \`restic backup\`)
+        -c      Specify command to run (by default, \`restic backup\`)
         -h      Print this help text and exit
         -n      Dry run without actually creating snapshots or backing up
-        -p      Specify arguments to pass to the command
+        -o      Specify options to pass to the command
         -r      Process children of specified datasets recursively
         -v      Print the version number and exit
 "
@@ -91,7 +91,7 @@ Options:
 #
 usage()
 {
-    echo "$__usage"; 
+    echo "$__usage";
 }
 
 # help()
@@ -100,7 +100,7 @@ usage()
 #
 help()
 {
-    echo "$__help"; 
+    echo "$__help";
 }
 
 # Process command line options
@@ -108,7 +108,7 @@ dry_run=0
 zfs_recursive=
 all_datasets=0
 backup_command="$RESTIC backup"
-backup_command_args=
+backup_command_opts=
 
 # TODO: handle long options
 # Convert long options (if present) to short options
@@ -120,20 +120,20 @@ backup_command_args=
 #             set -- "$@" "-c${longopt#*=}"
 #             shift
 #         ;;
-#         --command-args=?*)
-#             set -- "$@" "-p${longopt#*=}"
+#         --command-opts=?*)
+#             set -- "$@" "-o${longopt#*=}"
 #             shift
 #         ;;
 #     esac
 # done
 
-while getopts "ac:hnp:rv" option; do
+while getopts "ac:hno:rv" option; do
     case "$option" in
         a) all_datasets=1;;
         c) backup_command=${OPTARG};;
         h) usage; help; exit 0;;
         n) dry_run=1;;
-        p) backup_command_args=${OPTARG};;
+        o) backup_command_opts=${OPTARG};;
         r) zfs_recursive='-r';;
         v) echo "$VERSION"; exit 0;;
         ?) usage; exit 1;;
@@ -187,7 +187,7 @@ run_command()
 # take_snapshots()
 #
 # Take a snapshots of each specified dataset.
-# 
+#
 # Loops over zfs datasets from the args (either a string or blank for all),
 # adding -r if specified in the options. For each one, generates and runs a
 # commmand to take a snapshot in the script's namespace. For example:
@@ -196,7 +196,8 @@ run_command()
 #
 take_snapshots()
 {
-    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS | while read -r dataset; do
+    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS \
+    | while read -r dataset; do
         output "Snapshotting %s... " "$dataset"
 
         ZFSLISTCOMMAND=$(printf \
@@ -211,18 +212,19 @@ take_snapshots()
 #
 # For each dataset, open the snapshot and mount it into a directory tree.
 #
-# First, ensures the directory for a temp file to record exists. Then, loops 
-# over zfs datasets from the args (either a string or blank for all). For each
-# one, generates and runs commands to do the following:
+# First, makes sure directories exist for the working backup and a temp file.
+# Then, loops over the zfs datasets in the args (if specified) or all datasets
+# if the -a option is specified. For each dataset, generates and runs commands
+# to do the following:
 #
-#   1. Look up the dataset mountpoint, skipping datasets with no mountpoint.
-#   2. Mount the snapshot's mountpoint (/dataset/.zfs/snapshot/<name>) within
-#      the working directory, recreating the mounted filesystem layout,
-#      skipping datasets for which the snapshot mountpoint doesn't exist.
-#   3. Write out the mount desgination to the temp file.
+#   1. Look up the dataset's mountpoint, skipping datasets that aren't mounted.
+#   2. Mount the backup snapshot contents (/dataset/.zfs/snapshot/<name>) into
+#      the working directory in the same layout as the mounted filesystem,
+#      skipping datasets for which no snapshot contents exist.
+#   3. Write out the mount destination to the temp file (to unmount later).
 #
 # For example, for dataset zroot/usr/home:
-#   
+#
 #   # zfs get -H -o value mountpoint zroot/usr/home
 #   # mount -o ro -t nullfs \
 #       /usr/home/.zfs/snapshot/restomic_123_2022-01-14_01:00:00 \
@@ -233,23 +235,27 @@ mount_snapshots()
 {
     # Create the destinations for mount points and temp files
     run_command mkdir -p "$TMPDIR"
-    run_command umask 0077 && run_command mkdir -p "$MNTDIR" && run_command umask 0022
+    run_command umask 0077 && run_command mkdir -p "$MNTDIR" \
+        && run_command umask 0022
 
-    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS | while read -r dataset; do
+    # Loop over specified datasets or all datasets
+    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS \
+    | while read -r dataset; do
         # Get the mountpoint for this dataset
         MOUNTPOINTCOMMAND=$(printf \
             "%s get -H -o value mountpoint %s\n" \
             "$ZFS" "$dataset")
         MOUNTPOINT=$($MOUNTPOINTCOMMAND)
 
-        # Don't try to back up datasets with no mountpoint (wouldn't know where
-        # to put them in the backup destination)
+        # If there's no mountpoint (i.e., it's not mounted), skip to the next
+        # dataset. (We wouldn't know where to put it in the working directory.)
         if [ "$MOUNTPOINT" = 'none' ]; then
             output "Skipping %s because it's not mounted.\n" "$dataset"
             continue
         fi
 
-        # Access the snapshot we created (cd to its directory under .zfs)
+        # Assemble string for the path to the contents of the backup snapshot
+        # under <dataset>/.zfs/snapshot/<name>.
         SNAPDIR=''
 
         if [ "$MOUNTPOINT" = '/' ]; then
@@ -260,9 +266,9 @@ mount_snapshots()
                 "$MOUNTPOINT" "$PREFIX" "$DATE")
         fi
 
-        # If a dataset doesn't have any files in it (such as a dataset like
-        # zroot that contains only other datasets), the .zfs/snapshot directory
-        # doesn't exist. Skip the dataset in that case.
+        # If the dataset has no files in it (such as a dataset like zroot that
+        # only contains other datasets), the .zfs/snapshot directory doesn't
+        # exist. Skip the dataset in that case.
         #
         # Don't check this on dry run. We didn't create the snapshot, so the
         # directory doesn't exist.
@@ -272,9 +278,12 @@ mount_snapshots()
             continue
         fi
 
+        # Assemble string for the path in the working directory to mount this
+        # snapshot into.
         MOUNTDESTINATION=$(printf "%s%s" \
             "$MNTDIR" "$MOUNTPOINT")
 
+        # Mount the snapshot into that location.
         output "Mounting %s into %s... " \
             "$SNAPDIR" "$MOUNTDESTINATION"
 
@@ -295,7 +304,7 @@ mount_snapshots()
 
 # run_restic_backup()
 #
-# Run the specified backup command (by default, path to restic) with the 
+# Run the specified backup command (by default, path to restic) with the
 # specified arguments plus the mountpoint directory as the last argument.
 #
 run_restic_backup()
@@ -304,7 +313,7 @@ run_restic_backup()
 
     # Note: expands command and arguments before feeding them to the shell
     # so that commands like `restomic -c "restic backup" -p "-n" /home` work.
-    run_command ${backup_command} ${backup_command_args} "$MNTDIR" \
+    run_command ${backup_command} ${backup_command_opts} "$MNTDIR" \
     && output "...done.\n"
 }
 
@@ -350,7 +359,7 @@ unmount_snapshots()
 # Remove snapshots in the script's namespace for this run's date and time.
 #
 # Generates and runs a command like the following:
-#   
+#
 #   zfs list -H -o name -t snap \
 #   | grep restomic_123_2023-01-14_01:00:00 \
 #   | xargs -n1 zfs destroy
