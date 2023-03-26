@@ -8,7 +8,7 @@ These scripts create `kopia` or `restic` backups that capture all your files at 
 To do so, they take one or more zfs datasets, snapshot each one, `nullfs`-mount them together at a temporary mount point, and run `kopia` or `restic` on that filesystem.
 Backing up from a zfs snapshot ensures that files don't change during the backup.
 
-Because the scripts uses zfs to take atomic snapshots and `nullfs` to assemble filesystems, they support only zfs datasets on FreeBSD.
+Because the scripts use zfs to take atomic snapshots and `nullfs` to assemble filesystems, they support only zfs datasets on FreeBSD.
 They're written in POSIX shell script and have no dependencies apart from `kopia` and `restic`, respectively.
 
 ## Quick Start
@@ -29,6 +29,40 @@ restomic zroot/usr/home zroot/usr/src
 You can optionally process child datasets recursively with `-r` or process all mounted datasets with `-a`.
 
 For detailed usage information and a list of options, refer to the script help text available with `kopiatomic -h`.
+
+## Recommended Setup
+
+By default, `kopiatomic` runs `kopia snapshot <your datasets>` and `restomic` runs `restic backup <your datasets>`.
+To handle the initial connection or environment variables, you can make a wrapper script around `kopia` or `restic` and tell the script to run your wrapper instead of running the command directly.
+The following examples show how to do so for each backup client.
+
+### Setup for `kopia`
+Create `kopia-myrepo` as follows:
+
+```sh
+#!/bin/sh
+kopia repository connect from-config --file="myrepo.config"
+exec kopia "$@"
+```
+
+Store it somewhere on your `$PATH`, make it executable, and run `kopiatomic -c "kopia-myrepo snapshot" zroot/usr/home zroot/usr/src`
+
+### Setup for `restic`
+
+Create `restic-myrepo` as follows (example for an S3 backend).
+
+```sh
+#!/bin/sh
+export AWS_ACCESS_KEY_ID='12345'
+export AWS_SECRET_ACCESS_KEY='12345'
+export RESTIC_REPOSITORY='s3:example.com/my-repo'
+export RESTIC_PASSWORD_FILE='/path/to/password/file'
+exec restic "$@"
+```
+
+Store it somewhere on your `$PATH`, make it executable, and run `restomic -c "restic-myrepo backup" zroot/usr/home zroot/usr/src`.
+
+After running restomic, run the wrapper again to manage and prune snapshots, such as `restic-myrepo forget --keep-last 10 --prune`.
 
 ## Do I Need Atomic Backups?
 
