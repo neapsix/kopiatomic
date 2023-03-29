@@ -108,11 +108,11 @@ Tree Blobs:      4 new,     4 removed
 
 These top-level directories are created to mount the dataset into so that the backup mirrors the mounted filesystem.
 `restic` sees an updated modify time and updates them in the snapshot accordingly.
-
 This metadata change for adds a trivial amount to the backup, but it might add up if you back up very frequently.
-You can avoid it by setting `LEAVE_DIRS_IN_PLACE=1` at the top of the script.
+
+You can avoid marking these directories as changed by setting `LEAVE_DIRS_IN_PLACE=1` at the top of the script.
 With this flag set, `restomic` doesn't delete the working directories when it's done.
-Note that you must remove the empty directories or run once without the flag before backing up at a higher level (for example, if you back up `tank/usr/home` instead of `tank/usr/home/ben/`.
+You might need to remove the working directories or run once without the flag before backing up at a higher level (such as `tank/usr/home` instead of `tank/usr/home/ben/`).
 
 ## Acknowledgements
 
