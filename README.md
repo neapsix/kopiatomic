@@ -77,8 +77,42 @@ In that case, backup integrity is OK, but the backup might provide a recovery po
 For general, non-database use, `kopiatomic` and `restomic` can make your `kopia` and `restic` backups more consistent at the cost of a little complexity.
 Note that these scripts are not a robust solution for data where atomic backups are critical.
 
-One limitation to be aware of: `kopiatomic` doesn't make precisely atomic snapshots across datasets.
+One limitation to be aware of: `kopiatomic` and `restomic` don't make precisely atomic snapshots across datasets.
 Files within each dataset are captured atomically, but datasets might be captured at slightly different times, because the `zfs snapshot` command can take a few milliseconds to run.
+
+## Common Issues
+
+### My `restic` backup registers some directories as modified in every snapshot.
+
+This issue happens because `restomic` recreates and then removes the directory tree of the mounted filesystem above the specified datasets each time.
+For example, if you run `restomic tank/usr/home/ben`, you might see this:
+
+```console
+$ restic diff --metadata aaaaaaaa bbbbbbbb
+repository xxxxxxxx opened (version 2, compression level auto)
+comparing snapshot aaaaaaaa to bbbbbbbb:
+
+U    /restic/
+U    /restic/tank
+U    /restic/tank/usr
+U    /restic/tank/usr/home
+
+Files:           0 new,     0 removed,     0 changed
+Dirs:            0 new,     0 removed
+Others:          0 new,     0 removed
+Data Blobs:      0 new,     0 removed
+Tree Blobs:      4 new,     4 removed
+  Added:   1.288 KiB
+  Removed: 1.288 KiB
+```
+
+These top-level directories are created to mount the dataset into so that the backup mirrors the mounted filesystem.
+`restic` sees an updated modify time and updates them in the snapshot accordingly.
+
+This metadata change for adds a trivial amount to the backup, but it might add up if you back up very frequently.
+You can avoid it by setting `LEAVE_DIRS_IN_PLACE=1` at the top of the script.
+With this flag set, `restomic` doesn't delete the working directories when it's done.
+Note that you must remove the empty directories or run once without the flag before backing up at a higher level (for example, if you back up `tank/usr/home` instead of `tank/usr/home/ben/`.
 
 ## Acknowledgements
 

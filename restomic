@@ -28,6 +28,9 @@ DATE=$(date "+%F_%T")
 TMPDIR="/tmp/.$PREFIX$DATE"
 MNTDIR="/restic"
 
+# Set to 1 to not recreate and remove top-level directories each time
+LEAVE_DIRS_IN_PLACE=0
+
 __usage="
 Usage: $(basename $0) [-ahnrv][-c cmd][-o opts] <dataset or path> [...]
 "
@@ -328,6 +331,8 @@ run_restic_backup()
 # listed before its children (such as /usr before /usr/src), the function
 # uses forceful unmounts and attempts to run the umount command up to 5 times.
 #
+# Finally, deletes the working directory unless LEAVE_DIRS_IN_PLACE is set.
+#
 unmount_snapshots()
 {
     output "Unmounting all mounted snapshots"
@@ -349,7 +354,9 @@ unmount_snapshots()
         umount_count=$(($umount_count+1))
     done
 
-    rm -r "$MNTDIR"
+    if [ "$LEAVE_DIRS_IN_PLACE" -ne 1 ]; then
+        rm -r "$MNTDIR"
+    fi
 
     printf " done.\n"
 }
