@@ -84,7 +84,7 @@ Files within each dataset are captured atomically, but datasets might be capture
 
 ### My `restic` backup registers some directories as modified in every snapshot.
 
-This issue happens because `restomic` recreates and then removes the directory tree of the mounted filesystem above the specified datasets each time.
+This issue happens because `restomic` recreates and then removes the directory tree above the specified datasets each time.
 For example, if you run `restomic tank/usr/home/ben`, you might see this:
 
 ```console
@@ -106,13 +106,13 @@ Tree Blobs:      4 new,     4 removed
   Removed: 1.288 KiB
 ```
 
-These top-level directories are created to mount the dataset into so that the backup mirrors the mounted filesystem.
-`restic` sees an updated modify time and updates them in the snapshot accordingly.
-This metadata change for adds a trivial amount to the backup, but it might add up if you back up very frequently.
+These directories are created to mount datasets into so that the backup mirrors the mounted filesystem.
+`restic` sees the that the modify time is today and updates the modify time in the backup accordingly.
+This metadata change adds a trivial amount to the backup, but it might add up if you back up very frequently.
 
-You can avoid marking these directories as changed by setting `LEAVE_DIRS_IN_PLACE=1` at the top of the script.
+You can avoid the change by setting `LEAVE_DIRS_IN_PLACE=1` at the top of the script.
 With this flag set, `restomic` doesn't delete the working directories when it's done.
-You might need to remove the working directories or run once without the flag before backing up at a higher level (such as `tank/usr/home` instead of `tank/usr/home/ben/`).
+Note that you then need to remove them manually before backing up datasets at a higher level (such as `tank/usr/home` instead of `tank/usr/home/ben/`).
 
 ## Acknowledgements
 
