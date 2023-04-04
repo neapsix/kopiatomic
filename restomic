@@ -5,13 +5,15 @@
 # Ben Spiegel
 #
 # changelog:
+# 2023/04/03: *brs: added pre- and post-hooks and exit trap
 # 2023/03/18: *brs: added command and args options
 # 2023/01/14: *brs: created
 #
 
-VERSION='0.2'
 # Make sure to clean up snapshots and temp files before exiting
 trap "clean_up; exit" INT HUP TERM
+
+VERSION='0.3'
 
 # Paths for FreeBSD:
 ZFS='/sbin/zfs'
@@ -34,7 +36,7 @@ MNTDIR="/restic"
 LEAVE_DIRS_IN_PLACE=0
 
 __usage="
-Usage: $(basename $0) [-ahnrv][-c cmd][-o opts] <dataset or path> [...]
+Usage: $(basename $0) [-ahnrv][-c cmd][-o opts][-pq cmd] <dataset or path> [...]
 "
 
 __help="
@@ -81,15 +83,15 @@ Finally, it unmounts the nullfs directory tree, removes the working directory
 and temp files, and destroys the snapshots that were created.
 
 Options:
-        -a      Back up all datasets
-        -c      Specify command to run (by default, \`restic backup\`)
-        -h      Print this help text and exit
-        -n      Dry run without actually creating snapshots or backing up
-        -o      Specify options to pass to the command
-        -p      Specify pre-hook command to run before doing anything
-        -q      Specify post-hook command to run after the script is done
-        -r      Process children of specified datasets recursively
-        -v      Print the version number and exit
+    -a              Back up all datasets
+    -c COMMAND      Specify command to run (by default, \`restic backup\`)
+    -h              Print this help text and exit
+    -n              Dry run without creating snapshots or backing up
+    -o OPTIONS      Specify options to pass to the command
+    -p COMMAND      Specify pre-hook command to run before doing anything
+    -q COMMAND      Specify post-hook command to run after the script is done
+    -r              Process children of specified datasets recursively
+    -v              Print the version number and exit
 "
 
 # usage()
@@ -181,7 +183,7 @@ output()
         printf "(Dry Run) "
     fi
 
-    printf "$@"
+    printf '%s' "$@"
 }
 
 # run_command()
@@ -417,9 +419,9 @@ clean_up()
 }
 
 # Run script functions
-run_command ${pre_hook};
+run_command "$pre_hook";
 take_snapshots;
 mount_snapshots;
 run_restic_backup;
 clean_up;
-run_command ${post_hook};
+run_command "$post_hook";
