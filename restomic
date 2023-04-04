@@ -183,7 +183,7 @@ output()
         printf "(Dry Run) "
     fi
 
-    printf '%s' "$@"
+    printf "$@"
 }
 
 # run_command()
@@ -193,7 +193,7 @@ output()
 run_command()
 {
     if [ $dry_run -eq 0 ]; then
-        "$@"
+        eval "${@}"
     fi
 }
 
