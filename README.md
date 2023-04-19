@@ -36,8 +36,8 @@ By default, `kopiatomic` runs `kopia snapshot <your datasets>` and `restomic` ru
 To handle the initial connection or environment variables, you can make a wrapper script around `kopia` or `restic` and tell the script to run your wrapper instead of running the command directly.
 The following examples show how to do so for each backup client.
 
-### Setup for `kopia`
-Create `kopia-myrepo` as follows:
+### Wrapper Script for `kopia`
+Create a script called `kopia-myrepo` as follows:
 
 ```sh
 #!/bin/sh
@@ -47,9 +47,9 @@ exec kopia "$@"
 
 Store it somewhere on your `$PATH`, make it executable, and run `kopiatomic -c "kopia-myrepo snapshot" zroot/usr/home zroot/usr/src`
 
-### Setup for `restic`
+### Wrapper Script for `restic`
 
-Create `restic-myrepo` as follows (example for an S3 backend).
+Create a script called `restic-myrepo` as follows (example for an S3 backend).
 
 ```sh
 #!/bin/sh
