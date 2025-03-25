@@ -5,6 +5,7 @@
 # Ben Spiegel
 #
 # changelog:
+# 2025/03/24: *brs: use device-id-for-hardlinks flag in default command
 # 2023/04/03: *brs: added pre- and post-hooks and exit trap
 # 2023/03/18: *brs: added command and args options
 # 2023/01/14: *brs: created
@@ -13,7 +14,7 @@
 # Make sure to clean up snapshots and temp files before exiting
 trap "clean_up; exit" INT HUP TERM
 
-VERSION='0.3'
+VERSION='0.3.1'
 
 # Paths for FreeBSD:
 ZFS='/sbin/zfs'
@@ -77,14 +78,15 @@ If there is a mountpoint, it (2) mounts the snapshot contents as follows:
 
 and runs a restic backup command as follows:
 
-        # restic backup ${MNTDIR}
+        # RESTIC_FEATURES=device-id-for-hardlinks restic backup ${MNTDIR}
 
 Finally, it unmounts the nullfs directory tree, removes the working directory
 and temp files, and destroys the snapshots that were created.
 
 Options:
     -a              Back up all datasets
-    -c COMMAND      Specify command to run (by default, \`restic backup\`)
+    -c COMMAND      Specify command to run (by default, \`restic backup\`) with
+                    the device-id-for-hardlinks feature flag set.
     -h              Print this help text and exit
     -n              Dry run without creating snapshots or backing up
     -o OPTIONS      Specify options to pass to the command
@@ -116,7 +118,7 @@ help()
 dry_run=0
 zfs_recursive=
 all_datasets=0
-backup_command="$RESTIC backup"
+backup_command="RESTIC_FEATURES=device-id-for-hardlinks $RESTIC backup"
 backup_command_opts=
 pre_hook=
 post_hook=

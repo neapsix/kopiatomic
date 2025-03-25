@@ -26,13 +26,16 @@ Or, make sure environment variables for a `restic` repository are set and run `r
 restomic zroot/usr/home zroot/usr/src
 ```
 
+Note that `restomic` uses the `device-id-for-hardlinks` feature flag, available starting in `restic` 0.17.
+Without this option set, `restic` registers all directories as modified every time when backing up from a mounted ZFS snapshot.
+
 You can optionally process child datasets recursively with `-r` or process all mounted datasets with `-a`.
 
-For detailed usage information and a list of options, refer to the script help text available with `kopiatomic -h`.
+For detailed usage information and a list of options, refer to the script help text available with `kopiatomic -h` or `restomic -h`.
 
 ## Recommended Setup
 
-By default, `kopiatomic` runs `kopia snapshot <your datasets>` and `restomic` runs `restic backup <your datasets>`.
+By default, `kopiatomic` runs `kopia snapshot <your datasets>` and `restomic` runs `restic backup <your datasets>` (with the `device-id-for-hardlinks` flag set).
 To handle the initial connection or environment variables, you can make a wrapper script around `kopia` or `restic` and tell the script to run your wrapper instead of running the command directly.
 The following examples show how to do so for each backup client.
 
@@ -57,6 +60,7 @@ export AWS_ACCESS_KEY_ID='12345'
 export AWS_SECRET_ACCESS_KEY='12345'
 export RESTIC_REPOSITORY='s3:example.com/my-repo'
 export RESTIC_PASSWORD_FILE='/path/to/password/file'
+export RESTIC_FEATURES='device-id-for-hardlinks'
 exec restic "$@"
 ```
 
@@ -117,5 +121,5 @@ Note that you then need to remove them manually before backing up datasets at a 
 ## Acknowledgements
 
 I built on some of the work in this blog post by Arsen Arsenović: [Unattended backups with ZFS, restic, Backblaze B2 and systemd](https://www.aarsen.me/posts/2022-02-15-sweet-unattended-backups.html).
-Note that he uses a patched version of restic to solve an issue where `restic` incorrectly registers all files as changed when running from a zfs snapshot.
-I'm testing with a different patch that addresses this issue but don't plan to merge `restomic` into this repo until the issue is fixed in a `restic` release.
+He uses a patched version of `restic` to solve the issue where it incorrectly registers all directories as changed when running from a zfs snapshot.
+A similar patch for this issue is now available in `restic` with the `device-id-for-hardlinks` feature flag.
