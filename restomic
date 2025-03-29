@@ -5,6 +5,7 @@
 # Ben Spiegel
 #
 # changelog:
+# 2025/04/11: *brs: refactor arg parsing, support datasets with spaces
 # 2025/03/24: *brs: use device-id-for-hardlinks flag in default command
 # 2023/04/03: *brs: added pre- and post-hooks and exit trap
 # 2023/03/18: *brs: added command and args options
@@ -14,7 +15,7 @@
 # Make sure to clean up snapshots and temp files before exiting
 trap "clean_up; exit" INT HUP TERM
 
-VERSION='0.3.1'
+VERSION='0.4'
 
 # Paths for FreeBSD:
 ZFS='/sbin/zfs'
@@ -28,7 +29,7 @@ RESTIC='/usr/local/bin/restic'
 # RESTIC='/usr/bin/restic'
 
 # Snapshot namespace is a prefix (script name and PID) and the date
-PREFIX="$(basename $0)_$$_"
+PREFIX="$(basename "$0")_$$_"
 DATE=$(date "+%F_%T")
 TMPDIR="/tmp/.$PREFIX$DATE"
 MNTDIR="/restic"
@@ -37,7 +38,7 @@ MNTDIR="/restic"
 LEAVE_DIRS_IN_PLACE=0
 
 __usage="
-Usage: $(basename $0) [-ahnrv][-c cmd][-o opts][-pq cmd] <dataset or path> [...]
+Usage: $(basename "$0") [-ahnrv][-c cmd][-o opts][-pq cmd] <dataset or path> [...]
 "
 
 __help="
@@ -52,7 +53,7 @@ process child datasets too with -r or process all mounted datasets with -a.
 Because it uses nullfs to assemble datasets into the working directory, the
 script runs only on FreeBSD.
 
-For example, $(basename $0) -r zroot, given the following zfs list output:
+For example, $(basename "$0") -r zroot, given the following zfs list output:
 
         \$ zfs list -t filesystem -H -o name
         zroot
@@ -149,29 +150,33 @@ while getopts "ac:hno:p:q:rv" option; do
         o) backup_command_opts=${OPTARG};;
         p) pre_hook=${OPTARG};;
         q) post_hook=${OPTARG};;
-        r) zfs_recursive='-r';;
+        r) zfs_recursive=1;;
         v) echo "$VERSION"; exit 0;;
         ?) usage; exit 1;;
     esac
 done
 
 # Done processing options. Shift the index so only target arguments are left
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 
-DATASETS=
+use_dataset_args=
 
 # Make sure there is at least one argument or -a is specified
 if [ "$#" -lt 1 ] && [ "$all_datasets" -ne 1 ]; then
     usage; exit 1
 fi
 
-# Unless -a is specified, capture specified datasets from the args
+# Unless -a is specified, use specified datasets from the args
 if [ "$all_datasets" -ne 1 ]; then
-    DATASETS="$*"
+    use_dataset_args=1
 fi
 
-# Make sure valid datasets are specified. Note: don't double-quote $DATASETS
-if ! $ZFS list -t filesystem $zfs_recursive $DATASETS > /dev/null;  then
+# Make sure valid datasets are specified.
+# NOTE: This line and others below use parameter expansion (braces) with
+# alternate values for the the -r option and the specified datasets so that the
+# arg is substituted with null if not set. Quoting would instead inclue an
+# argument of "" in the zfs list command, which doesn't work.
+if ! "$ZFS" list -t filesystem ${zfs_recursive:+"-r"} ${use_dataset_args:+"$@"} > /dev/null;  then
     exit 1
 fi
 
@@ -185,7 +190,7 @@ output()
         printf "(Dry Run) "
     fi
 
-    printf "$@"
+    printf '%b' "$@"
 }
 
 # run_command()
@@ -195,7 +200,7 @@ output()
 run_command()
 {
     if [ $dry_run -eq 0 ]; then
-        eval "${@}"
+        "$@"
     fi
 }
 
@@ -211,15 +216,13 @@ run_command()
 #
 take_snapshots()
 {
-    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS \
+    "$ZFS" list -t filesystem ${zfs_recursive:+"-r"} -H -o name ${use_dataset_args:+"$@"} \
     | while read -r dataset; do
-        output "Snapshotting %s... " "$dataset"
-
-        ZFSLISTCOMMAND=$(printf \
-            "%s snap %s@%s%s" \
-            "$ZFS" "$dataset" "$PREFIX" "$DATE")
-        run_command $ZFSLISTCOMMAND \
-            && printf "done.\n"
+        output "Snapshotting ${dataset}... "
+        snapshot=$(printf '%s@%s%s' "$dataset" "$PREFIX" "$DATE")
+        if run_command "$ZFS" snap "$snapshot"; then
+            printf "done.\n"
+        fi
     done
 }
 
@@ -254,18 +257,15 @@ mount_snapshots()
         && run_command umask 0022
 
     # Loop over specified datasets or all datasets
-    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS \
+    "$ZFS" list -t filesystem ${zfs_recursive:+"-r"} -H -o name ${use_dataset_args:+"$@"} \
     | while read -r dataset; do
         # Get the mountpoint for this dataset
-        MOUNTPOINTCOMMAND=$(printf \
-            "%s get -H -o value mountpoint %s\n" \
-            "$ZFS" "$dataset")
-        MOUNTPOINT=$($MOUNTPOINTCOMMAND)
+        MOUNTPOINT=$("$ZFS" get -H -o value mountpoint "$dataset")
 
         # If there's no mountpoint (i.e., it's not mounted), skip to the next
         # dataset. (We wouldn't know where to put it in the working directory.)
         if [ "$MOUNTPOINT" = 'none' ]; then
-            output "Skipping %s because it's not mounted.\n" "$dataset"
+            output "Skipping $dataset because it's not mounted.\n"
             continue
         fi
 
@@ -288,8 +288,7 @@ mount_snapshots()
         # Don't check this on dry run. We didn't create the snapshot, so the
         # directory doesn't exist.
         if  [ $dry_run -eq 0 ] && ! stat "$SNAPDIR" > /dev/null 2>&1 ; then
-            output "Skipping %s. No snapshot directory (dataset empty).\n" \
-                "$dataset"
+            output "Skipping $dataset. No snapshot directory (dataset empty).\n"
             continue
         fi
 
@@ -299,15 +298,10 @@ mount_snapshots()
             "$MNTDIR" "$MOUNTPOINT")
 
         # Mount the snapshot into that location.
-        output "Mounting %s into %s... " \
-            "$SNAPDIR" "$MOUNTDESTINATION"
-
-        MOUNTCOMMAND=$(printf \
-            "mount -o ro -t nullfs %s %s" \
-            "$SNAPDIR" "$MOUNTDESTINATION")
+        output "Mounting $SNAPDIR into ${MOUNTDESTINATION}... "
 
         run_command mkdir -p "$MOUNTDESTINATION" \
-            && run_command $MOUNTCOMMAND \
+            && run_command mount -o ro -t nullfs "$SNAPDIR" "$MOUNTDESTINATION" \
             && printf "done.\n" \
 
         # Write out what was mounted to a file, but not on dry run
@@ -326,9 +320,13 @@ run_restic_backup()
 {
     output "Running backup... \n"
 
-    # Note: expands command and arguments before feeding them to the shell
-    # so that commands like `restomic -c "restic backup" -p "-n" /home` work.
-    run_command ${backup_command} ${backup_command_opts} "$MNTDIR" \
+    # NOTE: expands command and arguments before feeding them to the shell
+    # so that command and option values with multiple words work, such as
+    # `restomic -c "restic backup" -o "-q --json" /home`.
+    #
+    # These values for -c and -o work only if we don't quote $backup_command
+    # and $backup_command_opts and instead let them be expanded here.
+    run_command $backup_command $backup_command_opts "$MNTDIR" \
     && output "...done.\n"
 }
 
@@ -360,10 +358,11 @@ unmount_snapshots()
     umount_count=0
     while [ $umount_count -le 5 ]; do
         printf "..."
+        # NOTE: This doesn't work if $TOUNMOUNT is double-quoted (see above).
         if umount -f -t nullfs $TOUNMOUNT > /dev/null 2>&1; then
             break
         fi
-        umount_count=$(($umount_count+1))
+        umount_count=$((umount_count+1))
     done
 
     if [ "$LEAVE_DIRS_IN_PLACE" -ne 1 ]; then
@@ -387,9 +386,9 @@ destroy_snapshots()
 {
     output "Destroying snapshots... "
 
-    run_command $ZFS list -H -o name -t snap \
-        | $GREP $PREFIX$DATE \
-        | xargs -n1 $ZFS destroy \
+    run_command "$ZFS" list -H -o name -t snap \
+        | "$GREP" "$PREFIX""$DATE" \
+        | xargs -n1 "$ZFS" destroy \
         && printf "done.\n"
 }
 
@@ -400,7 +399,7 @@ destroy_snapshots()
 remove_temp_files()
 {
     output "Removing temp files... "
-    run_command rm -r $TMPDIR \
+    run_command rm -r "$TMPDIR" \
         && printf "done.\n"
 }
 
@@ -421,9 +420,10 @@ clean_up()
 }
 
 # Run script functions
-run_command "$pre_hook";
-take_snapshots;
-mount_snapshots;
+# NOTE: The pre- and post-hooks don't work with double quotes.
+run_command $(printf '%b' "$pre_hook");
+take_snapshots "$@";
+mount_snapshots "$@";
 run_restic_backup;
 clean_up;
-run_command "$post_hook";
+run_command $(printf '%b' "$post_hook");
