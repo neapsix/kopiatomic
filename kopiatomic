@@ -5,10 +5,16 @@
 # Ben Spiegel
 #
 # changelog:
+# 2025/04/11: *brs: refactor arg parsing, support datasets with spaces
+# 2023/04/03: *brs: added pre- and post-hooks and exit trap
+# 2023/03/18: *brs: added command and args options
 # 2023/01/14: *brs: created
 #
 
-VERSION='0.1'
+# Make sure to clean up snapshots and temp files before exiting
+trap "clean_up; exit" INT HUP TERM
+
+VERSION='0.4'
 
 # Paths for FreeBSD:
 ZFS='/sbin/zfs'
@@ -22,28 +28,31 @@ KOPIA='/usr/local/bin/kopia'
 # KOPIA='/usr/bin/kopia'
 
 # Snapshot namespace is a prefix (script name and PID) and the date
-PREFIX="$(basename $0)_$$_"
+PREFIX="$(basename "$0")_$$_"
 DATE=$(date "+%F_%T")
 TMPDIR="/tmp/.$PREFIX$DATE"
 MNTDIR="/kopia"
 
+# Set to 1 to not recreate and remove top-level directories each time
+LEAVE_DIRS_IN_PLACE=0
+
 __usage="
-Usage: $(basename $0) [-h][-n][-r][-a][-v] <dataset or mountpoint> [...]
+Usage: $(basename "$0") [-ahnrv][-c cmd][-o opts][-pq cmd] <dataset or path> [...]
 "
 
 __help="
 Makes atomic backups with kopia by creating a snapshot of each zfs dataset,
-nullfs-mounting those snapshots together into a temp directory, and running the
-backup command on the contents of that directory.
+nullfs-mounting those snapshots together into a working directory, and running
+the backup command on the contents of that directory.
 
-The script backs up the zfs datasets or dataset mountpoints you specify.
-Datasets must be mounted to be backed up. You can optionally process child
-datasets with -r or process all mounted datasets with -a.
+The script backs up one or more zfs datasets you specify (in zfs notation or
+as a file path). Datasets must be mounted to be backed up. You can optionally
+process child datasets too with -r or process all mounted datasets with -a.
 
-Because it uses nullfs to assemble filesystems, the script runs only on
-FreeBSD.
+Because it uses nullfs to assemble datasets into the working directory, the
+script runs only on FreeBSD.
 
-For example, $(basename $0) -r zroot, given the following zfs list output:
+For example, $(basename "$0") -r zroot, given the following zfs list output:
 
         \$ zfs list -t filesystem -H -o name
         zroot
@@ -64,22 +73,26 @@ Then, for each dataset, it (1) gets the mountpoint as follows:
 If there is a mountpoint, it (2) mounts the snapshot contents as follows:
 
         # mount -o ro -t nullfs \\
-          /usr/home/.zfs/snapshot/${PREFIX}${DATE} \\
-          ${MNTDIR}/usr/home
+            /usr/home/.zfs/snapshot/${PREFIX}${DATE} \\
+            ${MNTDIR}/usr/home
 
-and runs a kopia command as follows:
+and runs a kopia backup command as follows:
 
         # kopia snapshot create ${MNTDIR}
 
-Finally, it unmounts the nullfs directory tree, removes the temp directory,
-and destroys the snapshots that were created.
+Finally, it unmounts the nullfs directory tree, removes the working directory
+and temp files, and destroys the snapshots that were created.
 
 Options:
-        -h      Print this help text and exit
-        -n      Dry run without actually creating snapshots or backing up
-        -r      Process children of specified datasets recursively
-        -a      Back up all datasets
-        -v      Print the version number and exit
+    -a              Back up all datasets
+    -c COMMAND      Specify command to run (by default, \`kopia snapshot create\`)
+    -h              Print this help text and exit
+    -n              Dry run without creating snapshots or backing up
+    -o OPTIONS      Specify options to pass to the command
+    -p COMMAND      Specify pre-hook command to run before doing anything
+    -q COMMAND      Specify post-hook command to run after the script is done
+    -r              Process children of specified datasets recursively
+    -v              Print the version number and exit
 "
 
 # usage()
@@ -104,34 +117,64 @@ help()
 dry_run=0
 zfs_recursive=
 all_datasets=0
-while getopts "hnrav" option; do
+backup_command="$KOPIA snapshot create"
+backup_command_opts=
+pre_hook=
+post_hook=
+
+# TODO: handle long options
+# Convert long options (if present) to short options
+# for longopt in "$@"; do
+#     case "$longopt" in
+#         --command=?*)
+#             # Assign the string to the equivalent short option and value.
+#             # Note: ${arg#*=} deletes through =, leaving the value.
+#             set -- "$@" "-c${longopt#*=}"
+#             shift
+#         ;;
+#         --command-opts=?*)
+#             set -- "$@" "-o${longopt#*=}"
+#             shift
+#         ;;
+#     esac
+# done
+
+while getopts "ac:hno:p:q:rv" option; do
     case "$option" in
+        a) all_datasets=1;;
+        c) backup_command=${OPTARG};;
         h) usage; help; exit 0;;
         n) dry_run=1;;
-        r) zfs_recursive='-r';;
-        a) all_datasets=1;;
+        o) backup_command_opts=${OPTARG};;
+        p) pre_hook=${OPTARG};;
+        q) post_hook=${OPTARG};;
+        r) zfs_recursive=1;;
         v) echo "$VERSION"; exit 0;;
         ?) usage; exit 1;;
     esac
 done
 
 # Done processing options. Shift the index so only target arguments are left
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 
-DATASETS=
+use_dataset_args=
 
 # Make sure there is at least one argument or -a is specified
 if [ "$#" -lt 1 ] && [ "$all_datasets" -ne 1 ]; then
     usage; exit 1
 fi
 
-# Unless -a is specified, capture specified datasets from the args
+# Unless -a is specified, use specified datasets from the args
 if [ "$all_datasets" -ne 1 ]; then
-    DATASETS="$*"
+    use_dataset_args=1
 fi
 
-# Make sure valid datasets are specified. Note: don't double-quote $DATASETS
-if ! $ZFS list -t filesystem $zfs_recursive $DATASETS > /dev/null;  then
+# Make sure valid datasets are specified.
+# NOTE: This line and others below use parameter expansion (braces) with
+# alternate values for the the -r option and the specified datasets so that the
+# arg is substituted with null if not set. Quoting would instead inclue an
+# argument of "" in the zfs list command, which doesn't work.
+if ! "$ZFS" list -t filesystem ${zfs_recursive:+"-r"} ${use_dataset_args:+"$@"} > /dev/null;  then
     exit 1
 fi
 
@@ -145,7 +188,7 @@ output()
         printf "(Dry Run) "
     fi
 
-    printf "$@"
+    printf '%b' "$@"
 }
 
 # run_command()
@@ -171,14 +214,13 @@ run_command()
 #
 take_snapshots()
 {
-    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS | while read -r dataset; do
-        output "Snapshotting %s... " "$dataset"
-
-        ZFSLISTCOMMAND=$(printf \
-            "%s snap %s@%s%s" \
-            "$ZFS" "$dataset" "$PREFIX" "$DATE")
-        run_command $ZFSLISTCOMMAND \
-            && printf "done.\n"
+    "$ZFS" list -t filesystem ${zfs_recursive:+"-r"} -H -o name ${use_dataset_args:+"$@"} \
+    | while read -r dataset; do
+        output "Snapshotting ${dataset}... "
+        snapshot=$(printf '%s@%s%s' "$dataset" "$PREFIX" "$DATE")
+        if run_command "$ZFS" snap "$snapshot"; then
+            printf "done.\n"
+        fi
     done
 }
 
@@ -186,11 +228,16 @@ take_snapshots()
 #
 # For each dataset, open the snapshot and mount it into a directory tree.
 #
-# Loops over zfs datasets from the args (either a string or blank for all). For
-# each one, generates and runs commands to perform the following steps:
-#   1. Look up the dataset mountpoint, skipping datasets with no mountpoint.
-#   2. Mount the snapshot's mountpoint (/dataset/.zfs/snapshot/<name) within
-#      the working directory, recreating the mounted filesystem layout.
+# First, makes sure directories exist for the working backup and a temp file.
+# Then, loops over the zfs datasets in the args (if specified) or all datasets
+# if the -a option is specified. For each dataset, generates and runs commands
+# to do the following:
+#
+#   1. Look up the dataset's mountpoint, skipping datasets that aren't mounted.
+#   2. Mount the backup snapshot contents (/dataset/.zfs/snapshot/<name>) into
+#      the working directory in the same layout as the mounted filesystem,
+#      skipping datasets for which no snapshot contents exist.
+#   3. Write out the mount destination to the temp file (to unmount later).
 #
 # For example, for dataset zroot/usr/home:
 #
@@ -198,28 +245,30 @@ take_snapshots()
 #   # mount -o ro -t nullfs \
 #       /usr/home/.zfs/snapshot/kopiatomic_123_2022-01-14_01:00:00 \
 #       /kopia/usr/home
+#   # printf /kopia/usr/home >> /tmp/to_unmount
 #
 mount_snapshots()
 {
     # Create the destinations for mount points and temp files
     run_command mkdir -p "$TMPDIR"
-    run_command umask 0077 && run_command mkdir -p "$MNTDIR" && run_command umask 0022
+    run_command umask 0077 && run_command mkdir -p "$MNTDIR" \
+        && run_command umask 0022
 
-    $ZFS list -t filesystem $zfs_recursive -H -o name $DATASETS | while read -r dataset; do
+    # Loop over specified datasets or all datasets
+    "$ZFS" list -t filesystem ${zfs_recursive:+"-r"} -H -o name ${use_dataset_args:+"$@"} \
+    | while read -r dataset; do
         # Get the mountpoint for this dataset
-        MOUNTPOINTCOMMAND=$(printf \
-            "%s get -H -o value mountpoint %s\n" \
-            "$ZFS" "$dataset")
-        MOUNTPOINT=$($MOUNTPOINTCOMMAND)
+        MOUNTPOINT=$("$ZFS" get -H -o value mountpoint "$dataset")
 
-        # Don't try to back up datasets with no mountpoint (wouldn't know where
-        # to put them in the backup destination)
+        # If there's no mountpoint (i.e., it's not mounted), skip to the next
+        # dataset. (We wouldn't know where to put it in the working directory.)
         if [ "$MOUNTPOINT" = 'none' ]; then
-            output "Skipping %s because it's not mounted.\n" "$dataset"
+            output "Skipping $dataset because it's not mounted.\n"
             continue
         fi
 
-        # Access the snapshot we created (cd to its directory under .zfs)
+        # Assemble string for the path to the contents of the backup snapshot
+        # under <dataset>/.zfs/snapshot/<name>.
         SNAPDIR=''
 
         if [ "$MOUNTPOINT" = '/' ]; then
@@ -230,30 +279,27 @@ mount_snapshots()
                 "$MOUNTPOINT" "$PREFIX" "$DATE")
         fi
 
-        # If a dataset doesn't have any files in it (such as a dataset like
-        # zroot that contains only other datasets), the .zfs/snapshot directory
-        # doesn't exist. Skip the dataset in that case.
+        # If the dataset has no files in it (such as a dataset like zroot that
+        # only contains other datasets), the .zfs/snapshot directory doesn't
+        # exist. Skip the dataset in that case.
         #
         # Don't check this on dry run. We didn't create the snapshot, so the
         # directory doesn't exist.
         if  [ $dry_run -eq 0 ] && ! stat "$SNAPDIR" > /dev/null 2>&1 ; then
-            output "Skipping %s. No snapshot directory (dataset empty).\n" \
-                "$dataset"
+            output "Skipping $dataset. No snapshot directory (dataset empty).\n"
             continue
         fi
 
+        # Assemble string for the path in the working directory to mount this
+        # snapshot into.
         MOUNTDESTINATION=$(printf "%s%s" \
             "$MNTDIR" "$MOUNTPOINT")
 
-        output "Mounting %s into %s... " \
-            "$SNAPDIR" "$MOUNTDESTINATION"
-
-        MOUNTCOMMAND=$(printf \
-            "mount -o ro -t nullfs %s %s" \
-            "$SNAPDIR" "$MOUNTDESTINATION")
+        # Mount the snapshot into that location.
+        output "Mounting $SNAPDIR into ${MOUNTDESTINATION}... "
 
         run_command mkdir -p "$MOUNTDESTINATION" \
-            && run_command $MOUNTCOMMAND \
+            && run_command mount -o ro -t nullfs "$SNAPDIR" "$MOUNTDESTINATION" \
             && printf "done.\n" \
 
         # Write out what was mounted to a file, but not on dry run
@@ -265,7 +311,8 @@ mount_snapshots()
 
 # run_kopia_backup()
 #
-# Run a backup using kopia.
+# Run the specified backup command (by default, path to kopia) with the
+# specified arguments plus the mountpoint directory as the last argument.
 #
 run_kopia_backup()
 {
@@ -281,8 +328,14 @@ run_kopia_backup()
     # export KOPIA_B2_BUCKET='XXX'
 
     # run_command $KOPIA repository connect b2 --bucket="$KOPIA_B2_BUCKET"
-    run_command $KOPIA snapshot create "$MNTDIR"
-    output "...done.\n"
+
+    # NOTE: expands command and arguments before feeding them to the shell
+    # so that command and option values with multiple words work.
+    #
+    # These values for -c and -o work only if we don't quote $backup_command
+    # and $backup_command_opts and instead let them be expanded here.
+    run_command $backup_command $backup_command_opts "$MNTDIR" \
+    && output "...done.\n"
 }
 
 # unmount_snapshots()
@@ -295,6 +348,8 @@ run_kopia_backup()
 # To make sure everything is unmounted recursively even if a mount point is
 # listed before its children (such as /usr before /usr/src), the function
 # uses forceful unmounts and attempts to run the umount command up to 5 times.
+#
+# Finally, deletes the working directory unless LEAVE_DIRS_IN_PLACE is set.
 #
 unmount_snapshots()
 {
@@ -311,13 +366,16 @@ unmount_snapshots()
     umount_count=0
     while [ $umount_count -le 5 ]; do
         printf "..."
+        # NOTE: This doesn't work if $TOUNMOUNT is double-quoted (see above).
         if umount -f -t nullfs $TOUNMOUNT > /dev/null 2>&1; then
             break
         fi
-        umount_count=$(($umount_count+1))
+        umount_count=$((umount_count+1))
     done
 
-    rm -r "$MNTDIR"
+    if [ "$LEAVE_DIRS_IN_PLACE" -ne 1 ]; then
+        rm -r "$MNTDIR"
+    fi
 
     printf " done.\n"
 }
@@ -336,9 +394,9 @@ destroy_snapshots()
 {
     output "Destroying snapshots... "
 
-    run_command $ZFS list -H -o name -t snap \
-        | $GREP $PREFIX$DATE \
-        | xargs -n1 $ZFS destroy \
+    run_command "$ZFS" list -H -o name -t snap \
+        | "$GREP" "$PREFIX""$DATE" \
+        | xargs -n1 "$ZFS" destroy \
         && printf "done.\n"
 }
 
@@ -349,7 +407,7 @@ destroy_snapshots()
 remove_temp_files()
 {
     output "Removing temp files... "
-    run_command rm -r $TMPDIR \
+    run_command rm -r "$TMPDIR" \
         && printf "done.\n"
 }
 
@@ -359,6 +417,9 @@ remove_temp_files()
 #
 clean_up()
 {
+    # Override trap above; don't try to clean up when exiting during clean_up
+    trap "exit" INT HUP TERM
+
     output "Cleaning up...\n"
     unmount_snapshots;
     destroy_snapshots;
@@ -366,7 +427,11 @@ clean_up()
     output "...done.\n"
 }
 
-take_snapshots;
-mount_snapshots;
+# Run script functions
+# NOTE: The pre- and post-hooks don't work with double quotes.
+run_command $(printf '%b' "$pre_hook");
+take_snapshots "$@";
+mount_snapshots "$@";
 run_kopia_backup;
 clean_up;
+run_command $(printf '%b' "$post_hook");

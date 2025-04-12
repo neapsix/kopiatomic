@@ -247,7 +247,7 @@ take_snapshots()
 #   # mount -o ro -t nullfs \
 #       /usr/home/.zfs/snapshot/restomic_123_2022-01-14_01:00:00 \
 #       /restic/usr/home
-#   # printf /restic/usr/home >> /tmp/
+#   # printf /restic/usr/home >> /tmp/to_unmount
 #
 mount_snapshots()
 {
